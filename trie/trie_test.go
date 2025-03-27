@@ -71,6 +71,20 @@ func TestGet(t *testing.T) {
 	if found {
 		t.Errorf("Get(\"hell\") found = %v, want false", found)
 	}
+
+	// Test prefix with value and children
+	tr.Add("car", 1)
+	tr.Add("card", 2)
+	value, found = tr.Get("card")
+	if !found || value != 2 {
+		t.Errorf("Get(\"card\") = %d, %v, want 2, true", value, found)
+	}
+
+	// Test the prefix key still works
+	value, found = tr.Get("car")
+	if !found || value != 1 {
+		t.Errorf("Get(\"car\") = %d, %v, want 1, true", value, found)
+	}
 }
 
 func TestRemove(t *testing.T) {
@@ -106,12 +120,33 @@ func TestClear(t *testing.T) {
 	}
 }
 
+func TestCompact(t *testing.T) {
+	tr := New[int]()
+	tr.Add("car", 1)
+	tr.Add("card", 2)
+	tr.Add("cat", 3)
+	tr.Compact()
+
+	// Test compacted trie
+	value, found := tr.Get("car")
+	if !found || value != 1 {
+		t.Errorf("Get(\"car\") after Compact = %d, %v, want 1, true", value, found)
+	}
+	value, found = tr.Get("card")
+	if !found || value != 2 {
+		t.Errorf("Get(\"card\") after Compact = %d, %v, want 2, true", value, found)
+	}
+	value, found = tr.Get("cat")
+	if !found || value != 3 {
+		t.Errorf("Get(\"cat\") after Compact = %d, %v, want 3, true", value, found)
+	}
+}
+
 // Benchmarks
 
 func BenchmarkAdd(b *testing.B) {
 	tr := New[int]()
 	keys := []string{"hello", "help", "hello world", "helicopter", "helium"}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr.Add(keys[i%len(keys)], i)
@@ -124,7 +159,6 @@ func BenchmarkGet(b *testing.B) {
 	for i, key := range keys {
 		tr.Add(key, i)
 	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr.Get(keys[i%len(keys)])
@@ -134,43 +168,40 @@ func BenchmarkGet(b *testing.B) {
 func BenchmarkRemove(b *testing.B) {
 	tr := New[int]()
 	keys := []string{"hello", "help", "hello world", "helicopter", "helium"}
-
-	// Setup: populate trie
 	for i, key := range keys {
 		tr.Add(key, i)
 	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Re-add removed keys to keep trie populated
-		key := keys[i%len(keys)]
-		if tr.Remove(key) {
-			tr.Add(key, i)
-		}
+		tr.Remove(keys[i%len(keys)])
+		tr.Add(keys[i%len(keys)], i) // Reset for next iteration
 	}
 }
-
-// Large-scale benchmarks with 1M keys
 
 const numEntries = 1_000_000
 
 func generateRandomKeys(count, maxLen int) []string {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	keys := make([]string, count)
-	for i := 0; i < count; i++ {
-		length := 1 + rng.Intn(maxLen) // 1 to maxLen characters
+	keys := make(map[string]struct{}, count)
+	for len(keys) < count {
+		length := 1 + rng.Intn(maxLen)
 		var sb strings.Builder
 		for j := 0; j < length; j++ {
-			sb.WriteByte('a' + byte(rng.Intn(26))) // a-z
+			sb.WriteByte('a' + byte(rng.Intn(26)))
 		}
-		keys[i] = sb.String()
+		keys[sb.String()] = struct{}{}
 	}
-	return keys
+	result := make([]string, 0, count)
+	for k := range keys {
+		result = append(result, k)
+	}
+	return result
 }
+
+// Non-Compacted Benchmarks
 
 func BenchmarkTrieAddRandom(b *testing.B) {
 	keys := generateRandomKeys(numEntries, 128)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr := New[int]()
@@ -180,9 +211,20 @@ func BenchmarkTrieAddRandom(b *testing.B) {
 	}
 }
 
+func BenchmarkTrieAddRandomCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr := New[int]()
+		for j, key := range keys {
+			tr.Add(key, j)
+		}
+		tr.Compact()
+	}
+}
+
 func BenchmarkMapAddRandom(b *testing.B) {
 	keys := generateRandomKeys(numEntries, 128)
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m := make(map[string]int)
@@ -194,8 +236,7 @@ func BenchmarkMapAddRandom(b *testing.B) {
 
 func BenchmarkTrieAddSorted(b *testing.B) {
 	keys := generateRandomKeys(numEntries, 128)
-	sort.Strings(keys) // Sort keys before insertion
-
+	sort.Strings(keys)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr := New[int]()
@@ -205,10 +246,22 @@ func BenchmarkTrieAddSorted(b *testing.B) {
 	}
 }
 
+func BenchmarkTrieAddSortedCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	sort.Strings(keys)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr := New[int]()
+		for j, key := range keys {
+			tr.Add(key, j)
+		}
+		tr.Compact()
+	}
+}
+
 func BenchmarkMapAddSorted(b *testing.B) {
 	keys := generateRandomKeys(numEntries, 128)
-	sort.Strings(keys) // Sort keys before insertion
-
+	sort.Strings(keys)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		m := make(map[string]int)
@@ -224,7 +277,19 @@ func BenchmarkTrieGetRandom(b *testing.B) {
 	for i, key := range keys {
 		tr.Add(key, i)
 	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Get(keys[i%numEntries])
+	}
+}
 
+func BenchmarkTrieGetRandomCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	tr.Compact()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr.Get(keys[i%numEntries])
@@ -237,7 +302,6 @@ func BenchmarkMapGetRandom(b *testing.B) {
 	for i, key := range keys {
 		m[key] = i
 	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = m[keys[i%numEntries]]
@@ -251,7 +315,20 @@ func BenchmarkTrieGetSorted(b *testing.B) {
 	for i, key := range keys {
 		tr.Add(key, i)
 	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Get(keys[i%numEntries])
+	}
+}
 
+func BenchmarkTrieGetSortedCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	sort.Strings(keys)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	tr.Compact()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr.Get(keys[i%numEntries])
@@ -265,9 +342,85 @@ func BenchmarkMapGetSorted(b *testing.B) {
 	for i, key := range keys {
 		m[key] = i
 	}
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = m[keys[i%numEntries]]
+	}
+}
+
+func BenchmarkTrieRemoveRandom(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Remove(keys[i%numEntries])
+	}
+}
+
+func BenchmarkTrieRemoveRandomCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	tr.Compact()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Remove(keys[i%numEntries])
+	}
+}
+
+func BenchmarkMapRemoveRandom(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	m := make(map[string]int)
+	for i, key := range keys {
+		m[key] = i
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		delete(m, keys[i%numEntries])
+	}
+}
+
+func BenchmarkTrieRemoveSorted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	sort.Strings(keys)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Remove(keys[i%numEntries])
+	}
+}
+
+func BenchmarkTrieRemoveSortedCompacted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	sort.Strings(keys)
+	tr := New[int]()
+	for i, key := range keys {
+		tr.Add(key, i)
+	}
+	tr.Compact()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Remove(keys[i%numEntries])
+	}
+}
+
+func BenchmarkMapRemoveSorted(b *testing.B) {
+	keys := generateRandomKeys(numEntries, 128)
+	sort.Strings(keys)
+	m := make(map[string]int)
+	for i, key := range keys {
+		m[key] = i
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		delete(m, keys[i%numEntries])
 	}
 }

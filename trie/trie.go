@@ -5,10 +5,11 @@ type Trie[T any] interface {
 	Remove(key string) bool
 	Get(key string) (T, bool)
 	Clear()
+	Compact()
 }
 
 type trieNode[T any] struct {
-	children *[256]*trieNode[T]
+	children map[byte]*trieNode[T]
 	prefix   []byte
 	value    T
 	hasValue bool
@@ -29,15 +30,15 @@ func (t *trie[T]) Add(key string, value T) bool {
 			prefix:   keyBytes,
 			value:    value,
 			hasValue: true,
+			children: make(map[byte]*trieNode[T]),
 		}
-		return false // New key, no previous value
+		return false
 	}
 
 	current := t.root
 	offset := 0
 
 	for {
-		// Find common prefix length
 		commonLen := 0
 		for i := 0; i < len(current.prefix) && offset+i < len(keyBytes); i++ {
 			if current.prefix[i] != keyBytes[offset+i] {
@@ -47,37 +48,28 @@ func (t *trie[T]) Add(key string, value T) bool {
 		}
 
 		if commonLen == len(current.prefix) {
-			// We've matched the entire current prefix
 			if offset+commonLen == len(keyBytes) {
-				// Key matches exactly
 				if current.hasValue {
 					current.value = value
-					return true // Previous value existed, replaced it
+					return true
 				}
-				// Convert prefix node to leaf
 				current.value = value
 				current.hasValue = true
-				return false // No previous value, new key added
+				return false
 			}
 
-			// Need to continue down the tree
-			if current.children == nil {
-				// Convert to leaf node
-				current.value = value
-				current.hasValue = true
-				current.prefix = keyBytes[offset:]
-				return false // New key, no previous value
-			}
-
-			// Move to next child
 			nextByte := keyBytes[offset+commonLen]
+			if current.children == nil {
+				current.children = make(map[byte]*trieNode[T])
+			}
 			if current.children[nextByte] == nil {
 				current.children[nextByte] = &trieNode[T]{
 					prefix:   keyBytes[offset+commonLen:],
 					value:    value,
 					hasValue: true,
+					children: make(map[byte]*trieNode[T]),
 				}
-				return false // New key, no previous value
+				return false
 			}
 			current = current.children[nextByte]
 			offset += commonLen
@@ -87,8 +79,6 @@ func (t *trie[T]) Add(key string, value T) bool {
 		// Split the node
 		newPrefix := current.prefix[:commonLen]
 		remainder := current.prefix[commonLen:]
-
-		// Create new child for existing branch
 		oldChild := &trieNode[T]{
 			prefix:   remainder,
 			value:    current.value,
@@ -96,31 +86,24 @@ func (t *trie[T]) Add(key string, value T) bool {
 			children: current.children,
 		}
 
-		// Update current node
 		current.prefix = newPrefix
-		var zero T
-		current.value = zero
-		current.hasValue = false
-		current.children = new([256]*trieNode[T])
-
-		// Add old child to children
+		current.children = make(map[byte]*trieNode[T])
 		current.children[remainder[0]] = oldChild
 
-		// If we've used up the key, we're done
 		if offset+commonLen == len(keyBytes) {
 			current.value = value
 			current.hasValue = true
-			return false // New key, no previous value (split created a new leaf)
+			return false
 		}
 
-		// Add new leaf node
 		newChild := &trieNode[T]{
 			prefix:   keyBytes[offset+commonLen:],
 			value:    value,
 			hasValue: true,
+			children: make(map[byte]*trieNode[T]),
 		}
 		current.children[keyBytes[offset+commonLen]] = newChild
-		return false // New key, no previous value
+		return false
 	}
 }
 
@@ -135,37 +118,29 @@ func (t *trie[T]) Get(key string) (T, bool) {
 	offset := 0
 
 	for {
-		// Check prefix match
 		if len(keyBytes)-offset < len(current.prefix) {
 			return zero, false
 		}
 
 		for i := 0; i < len(current.prefix); i++ {
-			if offset+i >= len(keyBytes) || keyBytes[offset+i] != current.prefix[i] {
+			if keyBytes[offset+i] != current.prefix[i] {
 				return zero, false
 			}
 		}
+		offset += len(current.prefix)
 
-		// If we're at a leaf node
-		if current.hasValue {
-			if offset+len(current.prefix) == len(keyBytes) {
+		if offset == len(keyBytes) {
+			if current.hasValue {
 				return current.value, true
 			}
 			return zero, false
 		}
 
-		// Move to next child
-		if offset+len(current.prefix) >= len(keyBytes) {
-			return zero, false
-		}
-
-		nextByte := keyBytes[offset+len(current.prefix)]
-		if current.children[nextByte] == nil {
-			return zero, false
-		}
-
+		nextByte := keyBytes[offset]
 		current = current.children[nextByte]
-		offset += len(current.prefix)
+		if current == nil {
+			return zero, false
+		}
 	}
 }
 
@@ -175,44 +150,100 @@ func (t *trie[T]) Remove(key string) bool {
 		return false
 	}
 
-	current := t.root
-	offset := 0
+	return removeHelper(t, &t.root, keyBytes, 0)
+}
 
-	for {
-		if len(keyBytes)-offset < len(current.prefix) {
-			return false
-		}
-
-		for i := 0; i < len(current.prefix); i++ {
-			if offset+i >= len(keyBytes) || keyBytes[offset+i] != current.prefix[i] {
-				return false
-			}
-		}
-
-		if current.hasValue {
-			if offset+len(current.prefix) == len(keyBytes) {
-				var zero T
-				current.value = zero
-				current.hasValue = false
-				return true
-			}
-			return false
-		}
-
-		if offset+len(current.prefix) >= len(keyBytes) {
-			return false
-		}
-
-		nextByte := keyBytes[offset+len(current.prefix)]
-		if current.children[nextByte] == nil {
-			return false
-		}
-
-		current = current.children[nextByte]
-		offset += len(current.prefix)
+func removeHelper[T any](t *trie[T], nodePtr **trieNode[T], keyBytes []byte, offset int) bool {
+	current := *nodePtr
+	if current == nil {
+		return false
 	}
+
+	if len(keyBytes)-offset < len(current.prefix) {
+		return false
+	}
+
+	for i := 0; i < len(current.prefix); i++ {
+		if keyBytes[offset+i] != current.prefix[i] {
+			return false
+		}
+	}
+
+	if offset+len(current.prefix) == len(keyBytes) {
+		if current.hasValue {
+			current.hasValue = false
+			var zero T
+			current.value = zero
+			return true
+		}
+		return false
+	}
+
+	nextByte := keyBytes[offset+len(current.prefix)]
+	if current.children == nil || current.children[nextByte] == nil {
+		return false
+	}
+
+	nextChild := current.children[nextByte]
+	if removeHelper(t, &nextChild, keyBytes, offset+len(current.prefix)) {
+		if len(nextChild.children) == 0 && !nextChild.hasValue {
+			delete(current.children, nextByte)
+		} else {
+			current.children[nextByte] = nextChild
+		}
+		return true
+	}
+	return false
 }
 
 func (t *trie[T]) Clear() {
 	t.root = nil
+}
+
+func (t *trie[T]) Compact() {
+	if t.root == nil {
+		return
+	}
+	t.root = compactNode(t.root)
+}
+
+func compactNode[T any](node *trieNode[T]) *trieNode[T] {
+	if node == nil {
+		return nil
+	}
+
+	// Ensure children is a map
+	if node.children == nil {
+		node.children = make(map[byte]*trieNode[T])
+	}
+
+	// Count non-nil children
+	childCount := 0
+	var onlyChild *trieNode[T]
+	for _, child := range node.children {
+		if child != nil {
+			childCount++
+			onlyChild = child
+		}
+	}
+
+	// Merge with single child if no value at current node
+	if childCount == 1 && !node.hasValue {
+		mergedPrefix := append(node.prefix, onlyChild.prefix...)
+		return &trieNode[T]{
+			prefix:   mergedPrefix,
+			value:    onlyChild.value,
+			hasValue: onlyChild.hasValue,
+			children: onlyChild.children,
+		}
+	}
+
+	// Recursively compact children
+	for b, child := range node.children {
+		if child != nil {
+			node.children[b] = compactNode(child)
+		}
+	}
+
+	return node
 }
