@@ -11,3 +11,6 @@ build:
 
 test:
 	go test ./...
+
+benchmark:
+	go test -bench=. -benchmem ./...
